@@ -1,28 +1,31 @@
 #include <math.h>
 
 #include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <iostream>
+#include <iomanip>
 #include <queue>
+#include <string>
 #include <sstream>
 #include <unordered_map>
 #include <vector>
 
 #define PI 3.14
 #define EARTHRADIUSINKM 6356.752
-#define MAXRANGE 320 // range in KM
-#define CARSPEED 105.f //spedd in KM
+#define MAXRANGE 320 // Range in KM
+#define CARSPEED 105.f
 #define CHARGESPEED 800 //speed in KM/hr
 
 //Helpers
-double ToDeg(double Rad)
+double ToDeg(double rad)
 {
-    return Rad * (180.f / PI);
+    return rad * (180.f / PI);
 }
 
-double ToRad(double Deg)
+double ToRad(double deg)
 {
-    return Deg * (PI / 180.f);
+    return deg * (PI / 180.f);
 }
 
 double RoundTwoDecimals(double val)
@@ -59,29 +62,33 @@ double GetDistanceFromCoordinates(const GeoCoordinates& i_Coords1, const GeoCoor
 //Graph
 struct Edge
 {
-    int start = 0;
-    int sink = 0;
-    float cost = 0;
-    Edge(int begin, int end, float timeCost)
-        :start(begin)
-        ,sink(end)
-        ,cost(timeCost)
+    size_t Start;
+    size_t Sink;
+    float Cost;
+    Edge(size_t begin, size_t end, float timeCost)
+        :Start(begin)
+        ,Sink(end)
+        ,Cost(timeCost)
     {}
 };
 
 struct  Node
 {
-    std::vector<Edge*> Connections;
     GeoCoordinates Coord;
-    std::string Name;
-    int Id;
+    std::vector<Edge*> Connections;
+    std::string Name = "Default";
+    size_t Id = 0;
     Node() = default;
-    Node(int id)
+    Node(size_t id)
         : Id(id)
+    {}
+    Node(size_t id, const GeoCoordinates& i_Coord, const std::string& nodeName)
+        :Coord(i_Coord)
+        , Name(nodeName)
+        , Id(id)
     {}
 };
 
-//Graph
 class NetworkGraph
 {
 public:
@@ -121,10 +128,10 @@ public:
                         }
                         ++i;
                     }
-                    auto NodeItr = GraphMap.emplace(++ChargersCount, ChargersCount);
+                    size_t Hashvalue = std::hash<std::string>{}(NodeName);
+                    auto NodeItr = GraphMap.emplace(Hashvalue, Hashvalue);
                     NodeItr.first->second.Coord = NodeCoord;
                     NodeItr.first->second.Name = NodeName;
-                    GraphNameMap.emplace(NodeName, NodeItr.first->second.Id);
                 }
                 file.close();
             }
@@ -147,7 +154,7 @@ public:
                 {
                     if (it->first == it2->first)
                         continue;
-                    long double dis = GetDistanceFromCoordinates(it->second.Coord, it2->second.Coord);
+                    double dis = GetDistanceFromCoordinates(it->second.Coord, it2->second.Coord);
                     if (dis < MAXRANGE)
                     {
                         float timeCost = dis / CARSPEED;
@@ -158,8 +165,7 @@ public:
             }
         }
     }
-    std::unordered_map<int, Node> GraphMap;
-    std::unordered_map<std::string,int> GraphNameMap;
+    std::unordered_map<size_t, Node> GraphMap;
 private:
     bool IsFileFormatSupported(const char* FilePath)
     {
@@ -167,15 +173,12 @@ private:
         size_t pos = File.find(".csv");
         return pos != std::string::npos;
     }
-    static int ChargersCount;
 };
-
-int NetworkGraph::ChargersCount = 0;
 
 //PathFinding
 struct  NodeRecord
 {
-    int Node;
+    size_t Node;
     Edge* IncomingEdge;
     float CostSoFar;
 };
@@ -211,16 +214,18 @@ public:
     {
         if (GraphSpace)
         {
-            auto& Map = GraphSpace->GraphNameMap;
-            if (Map.find(source) != Map.end() && Map.find(sink) != Map.end())
+            auto& Map = GraphSpace->GraphMap;
+            size_t sourceHashValue = std::hash<std::string>{}(source);
+            size_t sinkHashValue = std::hash<std::string>{}(sink);
+            if (Map.find(sourceHashValue) != Map.end() && Map.find(sinkHashValue) != Map.end())
             {
-                return FindPath(Map[source], Map[sink]);
+                return FindPath(Map[sourceHashValue].Id, Map[sinkHashValue].Id);
             }
         }
         return std::vector<Edge*>();
     }
 
-    std::vector<Edge*> FindPath(int source, int sink)
+    std::vector<Edge*> FindPath(size_t source, size_t sink)
     {
         ClearFringe();
         ClosedList.clear();
@@ -243,11 +248,12 @@ public:
 
             if (current.Node == sink)
                 break;
+                
             std::vector<Edge*> connections = GraphSpace->GraphMap[current.Node].Connections;
             for (auto edge : connections)
             {
-                int toNodeFromEdge = edge->sink;
-                float toNodeCost = current.CostSoFar + edge->cost;
+                size_t toNodeFromEdge = edge->Sink;
+                float toNodeCost = current.CostSoFar + edge->Cost;
                 NodeRecord endNode{ toNodeFromEdge,edge,toNodeCost };
                 if (std::find(ClosedList.begin(), ClosedList.end(), endNode) != ClosedList.end())
                 {
@@ -271,7 +277,7 @@ public:
         while (current.Node != source)
         {
             path.push_back(current.IncomingEdge);
-            NodeRecord node{ current.IncomingEdge->start,nullptr,0 };
+            NodeRecord node{ current.IncomingEdge->Start,nullptr,0 };
             auto it = std::find(ClosedList.begin(), ClosedList.end(), node);
             current = *it;
         }
@@ -315,6 +321,7 @@ private:
     std::vector<NodeRecord> ClosedList;
     std::vector<NodeRecord> OpenList;
 };
+
 int main(int argc, char** argv)
 {
     if (argc != 4)
@@ -327,34 +334,38 @@ int main(int argc, char** argv)
     std::string initial_charger_name = argv[2];
     std::string goal_charger_name = argv[3];
 
-
     NetworkGraph NG(charger_csv_path.c_str());
     NG.SetupConnections();
 
     PathFinder P(&NG);
     auto Vec = P.FindPath(initial_charger_name, goal_charger_name);
 
-    double CarRange = MAXRANGE;
-    float TotalTimeCost = 0.f;
-    for (auto CS : Vec)
+
+    if (Vec.size() > 0)
     {
-        double dist = GetDistanceFromCoordinates(NG.GraphMap[CS->start].Coord, NG.GraphMap[CS->sink].Coord);
-        double TimeToCharge = 0.f;
-        if (CarRange < dist)
+        double CarRange = MAXRANGE;
+        float TotalTimeCost = 0.f;
+        for (auto CS : Vec)
         {
-            double diffInRange = (dist - CarRange);
-            CarRange += diffInRange;
-            TimeToCharge = diffInRange / CHARGESPEED;
+            double dist = GetDistanceFromCoordinates(NG.GraphMap[CS->Start].Coord, NG.GraphMap[CS->Sink].Coord);
+            float TimeToCharge = 0.f;
+            if (CarRange < dist)
+            {
+                float diffInRange = (dist - CarRange);
+                CarRange += diffInRange;
+                TimeToCharge = diffInRange / CHARGESPEED;
+            }
+            std::cout << NG.GraphMap[CS->Start].Name << ",";
+            if (TimeToCharge > 0.0)
+            {
+                printf("%.3f,", RoundTwoDecimals(TimeToCharge));
+
+            }
+            CarRange -= dist;
+            TotalTimeCost += (CS->Cost + TimeToCharge);
         }
-        std::cout << NG.GraphMap[CS->start].Name<<",";
-        if (TimeToCharge > 0.0) 
-        {
-            printf("%.3f,", RoundTwoDecimals(TimeToCharge));
-        }
-        CarRange -= dist;
-        TotalTimeCost += (CS->cost + TimeToCharge);
+        std::cout << NG.GraphMap[Vec[Vec.size() - 1]->Sink].Name << std::endl;
+        //std::cout << "TotalTime:" << TotalTimeCost << std::endl;
     }
-    std::cout << NG.GraphMap[Vec[Vec.size() - 1]->sink].Name << std::endl;
-    std::cout << "TotalTime:" << TotalTimeCost << std::endl;
     return 0;
 }
